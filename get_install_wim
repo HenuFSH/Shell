@@ -1,0 +1,54 @@
+#!/bin/bash
+iso_mount_point="/tmp/mount_point"
+# directory="/test_logs1/sfeng/win10_1803"
+wim_directory="/mnt/hgfs/Microsoft"
+# iso_source_path="/common/distro/unity/test-appliance/windows"
+iso_source_path="/mnt/hgfs/Microsoft"
+windows_list_path="./windows_list"
+wim_directory_on_vm="windows_update"
+vm_ip="192.168.1.7"
+readarray windows_list < <(cat $windows_list_path | awk -F : '{for(i=1;i<=NF;++i) print $i}')
+
+if [ $1 != 'copy' ]; then
+   echo "=====================Get install.wim========================"
+   if [ ! -e $iso_mount_point ]; then
+      mkdir $iso_mount_point
+   fi
+   for windows_name in ${windows_list[@]}; do
+      if [ -e $wim_directory/$windows_name/install.wim ]; then
+         echo "The file $windows_name is existed."
+         continue
+      else
+         mkdir $wim_directory/$windows_name
+      fi
+      echo $windows_name
+      mount -o loop $iso_source_path/"$windows_name".iso "$iso_mount_point"
+      cp -a $iso_mount_point/sources/install.wim $wim_directory/$windows_name/
+      umount $iso_mount_point
+   done
+
+   echo "=====================Copy the install.wim to VM========================"
+   for windows_name in ${windows_list[@]}; do
+      smbclient //$vm_ip/Shared -U Shared%BocceBal -c "cd $wim_directory_on_vm; mkdir $windows_name; cd $windows_name; put $wim_directory/$windows_name/install.wim install.wim;"
+   done
+
+   echo "=====================Copy the packages to VM========================"
+   for patch in `ls $wim_directory/*.msu`; do
+      patch_name=$(basename $patch)
+      echo $patch_name
+      smbclient //$vm_ip/Shared -U Shared%BocceBal -c "cd $wim_directory_on_vm; mkdir updates; cd updates; put $patch $patch_name;"
+   done
+   
+   echo "=====================Genarate the bat for integrating the updates to the install.wim file========================"
+   echo
+     "for /d %%i in (./win*) do \
+         Dism /Get-WimInfo /WimFile:C:\$wim_directory_on_vm\%%i\install.wim \
+      for /d %%i in (./win*) do \
+         Dism /Mount-WIM /WimFile:C:\$wim_directory_on_vm\%%i\install.wim /Index:1 /MountDir:C:\$wim_directory_on_vm\mount; \
+         Dism /Image:C:\$wim_directory_on_vm\mount /Add-Package /PackagePath:C:\$wim_directory_on_vm\updates; \
+         Dism /Unmount-WIM /MountDir:C:\$wim_directory_on_vm\mount /Commit; \
+         pause
+      " > installUpdate.bat
+   smbclient //$vm_ip/Shared -U Shared%BocceBal -c "cd $wim_directory_on_vm; put installUpdate.bat installUpdate.bat;"
+fi
+
